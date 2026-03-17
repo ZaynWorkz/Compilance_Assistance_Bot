@@ -1,0 +1,81 @@
+# simple_invoice_fixed.py
+
+import sys
+from pathlib import Path
+import pdfplumber
+
+def simple_extract(file_path):
+    print("=" * 60)
+    print("📄 SIMPLE INVOICE EXTRACTOR")
+    print("=" * 60)
+    print(f"📂 File: {file_path}")
+    
+    if not Path(file_path).exists():
+        print(f"❌ File does not exist: {file_path}")
+        return
+    
+    try:
+        with pdfplumber.open(file_path) as pdf:
+            print(f"📄 Total pages: {len(pdf.pages)}")
+            
+            if len(pdf.pages) == 0:
+                print("❌ PDF has no pages!")
+                return
+            
+            page = pdf.pages[0]
+            
+            # Get all words with their positions
+            words = page.extract_words()
+            print(f"\n📊 Found {len(words)} words")
+            
+            if len(words) == 0:
+                print("⚠️ No words extracted - trying different method...")
+                # Try simple text extraction
+                text = page.extract_text()
+                if text:
+                    print(f"\n📝 Raw text:\n{text[:500]}")
+                return
+            
+            # Group words into lines based on y-position
+            lines = {}
+            for word in words:
+                y_pos = round(word['top'], -1)
+                if y_pos not in lines:
+                    lines[y_pos] = []
+                lines[y_pos].append(word['text'])
+            
+            # Sort lines by y-position
+            sorted_lines = sorted(lines.items())
+            
+            print("\n📝 Text by lines:")
+            for y_pos, line_words in sorted_lines:
+                line = ' '.join(line_words)
+                print(f"Y={y_pos:3.0f}: {line[:100]}")
+                
+                # Look for key information
+                if 'Document No' in line:
+                    print(f"  ✅ Found Document No: {line}")
+                if 'Date:' in line:
+                    print(f"  ✅ Found Date: {line}")
+                if 'Customer ID' in line:
+                    print(f"  ✅ Found Customer ID: {line}")
+                if 'EORI' in line:
+                    print(f"  ✅ Found EORI: {line}")
+                if 'VAT' in line:
+                    print(f"  ✅ Found VAT: {line}")
+                if '$' in line:
+                    # Extract dollar amounts
+                    import re
+                    amounts = re.findall(r'\$?([\d,]+\.\d{2})', line)
+                    if amounts:
+                        print(f"  💰 Amounts: {amounts}")
+    
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    # 🔴 CHANGE THIS PATH TO YOUR ACTUAL FILE LOCATION
+    file_path = r"V:/Portresq/Compilance_Assistace_Bot/docs_/INVOICE.pdf"
+    simple_extract(file_path)
