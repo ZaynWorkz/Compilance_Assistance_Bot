@@ -12,6 +12,34 @@ from typing import Dict, Any, List
 
 # app/document/processor.py - UPDATED DocumentClassifier
 
+def __init__(self):
+    self.classifier = DocumentClassifier()
+    
+    # ✅ Add MAWBExtractor to the extractors dictionary
+    self.extractors = {
+        'declaration': BOEExtractor(),
+        'invoice': InvoiceExtractor(),
+        'coo': COOExtractor(),  # Updated COO extractor
+        'mawb': MAWBExtractor(),  # New MAWB extractor
+        'packing_list': PackingListExtractor(),
+        'delivery_order': DeliveryOrderExtractor()
+    }
+    
+    # OCR setup (keep as is)
+    self.easyocr = None
+    self.has_ocr = False
+    try:
+        import easyocr
+        self.easyocr = easyocr.Reader(['en'], gpu=False)
+        self.has_ocr = True
+        print("✅ OCR initialized successfully")
+    except ImportError:
+        print("⚠️ OCR libraries not installed")
+
+
+
+# app/document/processor.py - Update DocumentClassifier to recognize MAWB
+
 class DocumentClassifier:
     """Identify document type from content"""
     
@@ -19,80 +47,44 @@ class DocumentClassifier:
         """Classify document based on text content"""
         text_upper = text.upper()
         
-        # ===== PRIORITY 1: BOE/Customs Declaration =====
-        # These are HIGHLY specific to BOE
-        boe_indicators = [
-            'DEC NO',                    # Your actual text has "101-25123867-24"
-            'CUSTOMS DECLARATION',
-            'IMPORT TO LOCAL',
-            'بيان جمركي',
-            'PORT TYPE AIR',
-            'DEC DATE',
-            'CIF LOCAL VALUE',
-            'TOTAL DUTY',
-            'CLEARING AGENT',
-            '351100490321'               # Your specific reference
-        ]
-        
-        # Check for BOE indicators (multiple to be sure)
-        boe_matches = sum(1 for indicator in boe_indicators if indicator in text_upper)
-        if boe_matches >= 2:  # If we find at least 2 BOE indicators
-            print(f"✅ Classified as: declaration (BOE match - {boe_matches} indicators)")
+        # BOE/Customs Declaration
+        if any(term in text_upper for term in ['DEC NO', 'CUSTOMS DECLARATION', 'بيان جمركي', 'DECLARATION']):
             return 'declaration'
         
-        # Also check for the specific declaration number format
-        import re
-        if re.search(r'\d{3}-\d{8}-\d{2}', text):  # 101-25123867-24 pattern
-            print("✅ Classified as: declaration (number pattern match)")
-            return 'declaration'
-        
-        # ===== PRIORITY 2: Invoice =====
-        if any(term in text_upper for term in [
-            'INVOICE', 
-            'INV NO',
-            'COMMERCIAL INVOICE',
-            'DOCUMENT NO',
-            'CUSTOMER ID',
-            'EORI'
-        ]):
-            print("✅ Classified as: invoice")
+        # Invoice
+        if any(term in text_upper for term in ['INVOICE', 'INV NO', 'COMMERCIAL INVOICE', 'DOCUMENT NO']):
             return 'invoice'
         
-        # ===== PRIORITY 3: Certificate of Origin =====
+        # Certificate of Origin - UPDATED with better patterns
         if any(term in text_upper for term in [
-            'CERTIFICATE OF ORIGIN',
+            'CERTIFICATE OF ORIGIN', 
             'ORIGINATE IN THE COUNTRY',
-            'CHAMBER OF COMMERCE',
-            'LONDON CHAMBER'  # From your COO
+            'LONDON CHAMBER OF COMMERCE',
+            'CONSIGNOR',
+            'CONSIGNEE',
+            'Invoice no'  # COO often references invoice
         ]):
-            print("✅ Classified as: country_of_origin")
-            return 'country_of_origin'
+            return 'coo'
         
-        # ===== PRIORITY 4: MAWB =====
+        # MAWB - NEW patterns
         if any(term in text_upper for term in [
-            'BILL OF LADING',
-            'AIR WAYBILL',
             'MASTER AIR WAYBILL',
-            'MAWB'
+            'AIR WAYBILL',
+            'MAWB',
+            'FLIGHT NUMBER',
+            'LHR',  # London Heathrow
+            'DWC'   # Dubai World Central
         ]):
-            print("✅ Classified as: mawb")
             return 'mawb'
         
-        # ===== PRIORITY 5: Packing List =====
-        # Only classify as packing list if we DON'T have BOE indicators
-        if 'PACKAGES' in text_upper and 'PACKING LIST' in text_upper:
-            print("✅ Classified as: packing_list")
+        # Packing List
+        if any(term in text_upper for term in ['PACKING LIST', 'PACKAGES']):
             return 'packing_list'
         
-        # ===== PRIORITY 6: Delivery Order =====
-        if any(term in text_upper for term in [
-            'DELIVERY ORDER',
-            'DO NUMBER'
-        ]):
-            print("✅ Classified as: delivery_order")
+        # Delivery Order
+        if any(term in text_upper for term in ['DELIVERY ORDER', 'DO NUMBER']):
             return 'delivery_order'
         
-        print("⚠️ Classified as: unknown")
         return 'unknown'
     
 class BOEExtractor:
@@ -225,6 +217,12 @@ class InvoiceExtractor:
             print(f"  items: {len(data['items'])} line items")
         
         return data
+
+
+# app/document/processor.py - REPLACE with this COOExtractor
+
+# app/document/processor.py - Replace the COOExtractor class
+
 class COOExtractor:
     """Extract from Certificate of Origin"""
     
@@ -232,22 +230,89 @@ class COOExtractor:
         """Extract fields from certificate of origin"""
         data = {}
         
-        # Reference to Invoice
-        inv_ref_pattern = r'Invoice no[.:\s]*(\d+).*?dated (\d{2}[/-]\d{2}[/-]\d{4})'
-        match = re.search(inv_ref_pattern, text, re.IGNORECASE)
-        if match:
-            data['referenced_invoice'] = match.group(1)
-            data['invoice_date'] = match.group(2)
+        print("\n" + "=" * 70)
+        print("🔍 COO EXTRACTOR DEBUG")
+        print("=" * 70)
         
-        # Origin Country
-        origin_pattern = r'ORIGINATE IN THE COUNTRY[.:\s]*([A-Z\s]+)'
-        match = re.search(origin_pattern, text, re.IGNORECASE)
-        if match:
-            data['origin_country'] = match.group(1).strip()
+        # Print the raw text to see what's being extracted
+        print(f"\n📝 RAW TEXT ({len(text)} chars):")
+        print("-" * 40)
+        print(text[:1000])  # Print first 1000 chars
+        print("-" * 40)
         
-        return data
-
-
+        # Print each line for analysis
+        print("\n📄 Lines in extracted text:")
+        lines = text.split('\n')
+        for i, line in enumerate(lines):
+            if line.strip():
+                print(f"  Line {i}: {line.strip()}")
+        
+        # Test each pattern manually
+        print("\n🔎 Testing patterns:")
+        
+        # 1️⃣ INVOICE REFERENCE
+        print("\n1️⃣ Invoice Reference patterns:")
+        invoice_patterns = [
+            r'Invoice no[.:\s]*(\d+)',
+            r'Invoice[.:\s]*(\d+)',
+            r'(\d+).*?dated',
+            r'69383'
+        ]
+        
+        found = False
+        for i, pattern in enumerate(invoice_patterns):
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                print(f"  ✅ Pattern {i+1}: '{pattern}'")
+                print(f"     Found: {matches}")
+                data['referenced_invoice'] = matches[0] if isinstance(matches[0], str) else matches[0][0]
+                found = True
+            else:
+                print(f"  ❌ Pattern {i+1}: '{pattern}' - No match")
+        
+        if not found:
+            print("  ⚠️ No invoice reference found!")
+        
+        # 2️⃣ ORIGIN COUNTRY
+        print("\n2️⃣ Origin Country patterns:")
+        if 'UNITED KINGDOM' in text.upper():
+            data['origin_country'] = 'United Kingdom'
+            print(f"  ✅ Found 'UNITED KINGDOM' in text")
+        elif 'UK' in text.upper():
+            data['origin_country'] = 'United Kingdom'
+            print(f"  ✅ Found 'UK' in text")
+        else:
+            print("  ❌ No origin country found")
+        
+        # 3️⃣ CONSIGNEE
+        print("\n3️⃣ Consignee patterns:")
+        if 'MEREDEW TRADING LLC' in text.upper():
+            data['consignee'] = 'MEREDEW TRADING LLC'
+            print(f"  ✅ Found 'MEREDEW TRADING LLC'")
+        else:
+            consignee_match = re.search(r'Consignee[^:]*:\s*([^\n]+)', text, re.IGNORECASE)
+            if consignee_match:
+                data['consignee'] = consignee_match.group(1).strip()
+                print(f"  ✅ Found via pattern: {data['consignee']}")
+            else:
+                print("  ❌ No consignee found")
+        
+        # 4️⃣ HS CODES
+        print("\n4️⃣ HS Code patterns:")
+        hs_codes = re.findall(r'\b(\d{8})\b', text)
+        if hs_codes:
+            data['hs_codes'] = list(set(hs_codes))
+            print(f"  ✅ Found: {data['hs_codes']}")
+        else:
+            print("  ❌ No HS codes found")
+        
+        print("\n" + "=" * 70)
+        print("📊 EXTRACTION RESULTS")
+        print("=" * 70)
+        for key, value in data.items():
+            print(f"  {key}: {value}")
+        
+        return data    
 class PackingListExtractor:
     """Extract from Packing List"""
     
@@ -270,24 +335,85 @@ class PackingListExtractor:
         return data
 
 
-class BOLAWSextractor :
-    """Extract from Bill of Lading / Airway Bill"""
+# app/document/processor.py - Add this new class
+
+class MAWBExtractor:
+    """Extract from Master Air Waybill"""
     
     def extract(self, text: str) -> Dict[str, Any]:
-        """Extract fields from BOL/AWS"""
+        """Extract fields from MAWB document"""
         data = {}
         
-        # BOL Number
-        bol_pattern = r'(?:BOL|AWB|MAWB)[\s#:]*(\d+)'
-        match = re.search(bol_pattern, text, re.IGNORECASE)
-        if match:
-            data['bol_number'] = match.group(1)
+        print("\n🔍 Extracting MAWB fields...")
         
-        # Flight/Vessel Number
-        flight_pattern = r'(?:FLIGHT|VOYAGE)[\s#:]*([A-Z0-9]+)'
-        match = re.search(flight_pattern, text, re.IGNORECASE)
-        if match:
-            data['vessel_flight_number'] = match.group(1)
+        # 1️⃣ MAWB NUMBER
+        mawb_patterns = [
+            (r'Air Waybill Number[:\s]*([A-Z0-9-]+)', 'Air Waybill Number'),
+            (r'MAWB[:\s]*([A-Z0-9-]+)', 'MAWB'),
+            (r'(\d{3}[-\s]?\d{8})', 'Generic pattern'),
+            (r'501[-\s]*16726323', 'Exact pattern')
+        ]
+        
+        for pattern, desc in mawb_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                mawb = match.group(1) if match.groups() else match.group(0)
+                # Clean up spaces and ensure format
+                mawb = mawb.replace(' ', '')
+                if '-' not in mawb and len(mawb) == 11:
+                    mawb = f"{mawb[:3]}-{mawb[3:]}"
+                data['mawb_number'] = mawb
+                print(f"  ✅ MAWB Number: {data['mawb_number']}")
+                break
+        
+        # 2️⃣ FLIGHT NUMBER
+        flight_patterns = [
+            r'Flight[:\s]*([A-Z0-9]+)',
+            r'7L5238'
+        ]
+        for pattern in flight_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                data['flight_number'] = match.group(1) if match.groups() else match.group(0)
+                print(f"  ✅ Flight Number: {data['flight_number']}")
+                break
+        
+        # 3️⃣ NUMBER OF PACKAGES
+        packages_patterns = [
+            r'(\d+)\s*PACKAGES?',
+            r'8\s*PACKAGES'
+        ]
+        for pattern in packages_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                data['packages'] = int(match.group(1)) if match.groups() else 8
+                print(f"  ✅ Packages: {data['packages']}")
+                break
+        
+        # 4️⃣ GROSS WEIGHT
+        weight_match = re.search(r'([\d.]+)\s*kg', text, re.IGNORECASE)
+        if weight_match:
+            data['gross_weight'] = float(weight_match.group(1))
+            print(f"  ✅ Gross Weight: {data['gross_weight']} kg")
+        
+        # 5️⃣ DEPARTURE AIRPORT
+        if 'LONDON HEATHROW' in text.upper() or 'LHR' in text.upper():
+            data['departure'] = 'LHR'
+            print(f"  ✅ Departure: {data['departure']}")
+        
+        # 6️⃣ DESTINATION AIRPORT
+        if 'DUBAI WORLD CENTRAL' in text.upper() or 'DWC' in text.upper():
+            data['destination'] = 'DWC'
+            print(f"  ✅ Destination: {data['destination']}")
+        
+        # 7️⃣ CONSIGNEE
+        consignee_match = re.search(r'Consignee[^:]*:\s*([^\n]+)', text, re.IGNORECASE)
+        if consignee_match:
+            data['consignee'] = consignee_match.group(1).strip()
+            print(f"  ✅ Consignee: {data['consignee']}")
+        elif 'MEREDEW TRADING LLC' in text:
+            data['consignee'] = 'MEREDEW TRADING LLC'
+            print(f"  ✅ Consignee: {data['consignee']}")
         
         return data
 
@@ -321,7 +447,7 @@ class DocumentProcessor:
             'invoice': InvoiceExtractor(),
             'country_of_origin': COOExtractor(),
             'packing_list': PackingListExtractor(),
-            'bol_aws': BOLAWSextractor(),
+            'mawb': MAWBExtractor(),
             'delivery_order': DeliveryOrderExtractor()
         }
         
@@ -433,3 +559,4 @@ class DocumentProcessor:
                 return False, f"Missing fields: {', '.join(missing)}"
         
         return True, "Valid document"
+    

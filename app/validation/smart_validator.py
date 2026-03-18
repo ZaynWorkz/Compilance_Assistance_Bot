@@ -13,22 +13,17 @@ class SmartValidator:
     - Chain validation: COO must reference correct invoice
     """
     
+    # app/validation/smart_validator.py - Update
+
+class SmartValidator:
     def __init__(self):
         self.mandatory_docs = ['declaration', 'invoice', 'coo', 'mawb']
         self.optional_docs = ['packing_list', 'delivery_order']
-        
+    
     def validate(self, documents: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Main validation method
-        
-        Args:
-            documents: Dictionary of uploaded documents
-            
-        Returns:
-            Validation result with status and details
-        """
+
         result = {
-            'status': 'success',  # success, warning, failed, incomplete
+            'status': 'success',
             'missing_mandatory': [],
             'missing_optional': [],
             'mismatches': [],
@@ -36,46 +31,24 @@ class SmartValidator:
             'summary': {}
         }
         
-        # Step 1: Check for missing documents
+        # Check mandatory docs
         uploaded_types = list(documents.keys())
-        
         for doc in self.mandatory_docs:
             if doc not in uploaded_types:
                 result['missing_mandatory'].append(doc)
                 result['chain_valid'] = False
         
-        for doc in self.optional_docs:
-            if doc not in uploaded_types:
-                result['missing_optional'].append(doc)
-        
-        # If missing mandatory docs, return early
         if result['missing_mandatory']:
             result['status'] = 'incomplete'
-            result['summary'] = self._generate_summary(documents)
             return result
         
-        # Step 2: Validate the critical chain (COO → Invoice)
-        if 'coo' in documents and 'invoice' in documents:
-            coo_data = documents['coo'].get('extracted_data', {})
-            inv_data = documents['invoice'].get('extracted_data', {})
-            
-            coo_invoice = coo_data.get('referenced_invoice')
-            actual_invoice = inv_data.get('invoice_number')
-            
-            if coo_invoice and actual_invoice and str(coo_invoice) != str(actual_invoice):
-                result['mismatches'].append({
-                    'type': 'chain_break',
-                    'severity': 'critical',
-                    'message': f"COO references invoice #{coo_invoice} but actual invoice is #{actual_invoice}"
-                })
-                result['chain_valid'] = False
-        
-        # Step 3: Validate other cross-document consistency
+        # Run all consistency checks
+        self._check_coo_invoice_chain(documents, result)
         self._check_hs_codes(documents, result)
         self._check_origin(documents, result)
-        self._check_flight(documents, result)
+        self._check_mawb_consistency(documents, result)  # ✅ NEW CHECK
         
-        # Step 4: Determine final status
+        # Determine final status
         if not result['chain_valid']:
             result['status'] = 'failed'
         elif result['mismatches']:
@@ -83,11 +56,55 @@ class SmartValidator:
         else:
             result['status'] = 'success'
         
-        # Step 5: Generate summary
-        result['summary'] = self._generate_summary(documents)
-        
         return result
-    
+
+    def _check_mawb_consistency(self, documents, result):
+        """Check MAWB consistency with other documents"""   
+        
+        if 'mawb' not in documents:
+            return
+        
+        mawb_data = documents['mawb'].get('extracted_data', {})
+        
+        # Check against BOE if available
+        if 'declaration' in documents:
+            boe_data = documents['declaration'].get('extracted_data', {})
+            
+            # Flight number consistency
+            boe_flight = boe_data.get('flight_number') or boe_data.get('vessel_flight_number')
+            mawb_flight = mawb_data.get('flight_number')
+            
+            if boe_flight and mawb_flight and boe_flight != mawb_flight:
+                result['mismatches'].append({
+                    'type': 'flight_mismatch',
+                    'severity': 'high',
+                    'message': f'Flight mismatch: BOE says {boe_flight}, MAWB says {mawb_flight}'
+                })
+            
+            # Packages consistency
+            boe_packages = boe_data.get('packages') or boe_data.get('total_packages')
+            mawb_packages = mawb_data.get('packages')
+            
+            if boe_packages and mawb_packages and boe_packages != mawb_packages:
+                result['mismatches'].append({
+                    'type': 'packages_mismatch',
+                    'severity': 'medium',
+                    'message': f'Package count mismatch: BOE says {boe_packages}, MAWB says {mawb_packages}'
+                })
+        
+        # Check consignee consistency
+        if 'consignee' in mawb_data:
+            consignee = mawb_data['consignee']
+            for doc_type in ['declaration', 'invoice', 'coo']:
+                if doc_type in documents:
+                    other_consignee = documents[doc_type].get('extracted_data', {}).get('consignee')
+                    if other_consignee and other_consignee != consignee:
+                        result['mismatches'].append({
+                            'type': 'consignee_mismatch',
+                            'severity': 'high',
+                            'message': f'Consignee mismatch: {doc_type} says {other_consignee}, MAWB says {consignee}'
+                        })
+
     def _check_hs_codes(self, documents: Dict, result: Dict):
         """Check HS code consistency between declaration and invoice"""
         if 'declaration' not in documents or 'invoice' not in documents:

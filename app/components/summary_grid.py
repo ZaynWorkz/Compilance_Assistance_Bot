@@ -12,16 +12,14 @@ def render_summary_grid(declaration_number, documents):
     st.markdown(f"## 📋 Declaration Summary: `{declaration_number}`")
     st.divider()
     
-    # Define grid layout
     doc_order = [
-        ('declaration', '📄 Declaration'),
-        ('invoice', '💰 Invoice'),
-        ('packing_list', '📦 Packing List'),
-        ('bol_aws', '🚢 BOL/AWS'),
-        ('country_of_origin', '🌍 Country of Origin'),
-        ('delivery_order', '📋 Delivery Order')
-    ]
-    
+        {'type': 'declaration', 'label': '📄 Declaration', 'mandatory': True},
+        {'type': 'invoice', 'label': '💰 Invoice', 'mandatory': True},
+        {'type': 'coo', 'label': '🌍 Certificate of Origin', 'mandatory': True},
+        {'type': 'mawb', 'label': '✈️ MAWB', 'mandatory': True},
+        {'type': 'packing_list', 'label': '📦 Packing List', 'mandatory': False},
+        {'type': 'delivery_order', 'label': '📋 Delivery Order', 'mandatory': False}
+        ]  
     # Create grid
     for i in range(0, len(doc_order), 2):
         cols = st.columns(2)

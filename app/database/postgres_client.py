@@ -5,6 +5,7 @@ PostgreSQL client for database operations
 """
 
 import json
+from sqlalchemy import text
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import IntegrityError
@@ -215,3 +216,112 @@ class PostgresClient:
             return None
         finally:
             session.close() 
+
+    def save_draft(self, draft_data: dict) -> bool:
+        session = self.Session()
+        try:
+            # Check if draft exists
+            existing = session.execute(
+                text("SELECT id FROM drafts WHERE declaration_number = :decl_number"),
+                {"decl_number": draft_data['declaration_number']}
+            ).fetchone()
+            
+            if existing:
+                # Update existing draft
+                query = text("""
+                    UPDATE drafts 
+                    SET declaration_date = :decl_date,
+                        uploaded_docs = :uploaded_docs,
+                        skipped_docs = :skipped_docs,
+                        current_step = :current_step,
+                        current_doc_index = :current_doc_index,
+                        last_updated = CURRENT_TIMESTAMP,
+                        status = :status
+                    WHERE declaration_number = :decl_number
+                """)
+            else:
+                # Insert new draft
+                query = text("""
+                    INSERT INTO drafts 
+                    (declaration_number, declaration_date, uploaded_docs, skipped_docs, 
+                    current_step, current_doc_index, last_updated, status)
+                    VALUES 
+                    (:decl_number, :decl_date, :uploaded_docs, :skipped_docs,
+                    :current_step, :current_doc_index, CURRENT_TIMESTAMP, :status)
+                """)
+            
+            session.execute(query, {
+                "decl_number": draft_data['declaration_number'],
+                "decl_date": draft_data.get('declaration_date'),
+                "uploaded_docs": json.dumps(draft_data.get('uploaded_docs', {})),
+                "skipped_docs": json.dumps(draft_data.get('skipped_docs', [])),
+                "current_step": draft_data.get('current_step', ''),
+                "current_doc_index": draft_data.get('current_doc_index', 0),
+                "status": draft_data.get('status', 'draft')
+            })
+            
+            session.commit()
+            print(f"✅ Draft saved for {draft_data['declaration_number']}")
+            return True
+            
+        except Exception as e:
+            session.rollback()
+            print(f"❌ Error saving draft: {e}")
+            return False
+        finally:
+            session.close()
+
+    def get_draft(self, declaration_number: str) -> dict:
+        """
+        Retrieve draft for a declaration
+        """
+        session = self.Session()
+        try:
+            result = session.execute(
+                text("SELECT * FROM drafts WHERE declaration_number = :decl_number"),
+                {"decl_number": declaration_number}
+            ).fetchone()
+            
+            if result:
+                # Convert row to dict
+                draft = {
+                    'declaration_number': result[1],
+                    'declaration_date': result[2],
+                    'uploaded_docs': json.loads(result[3]) if result[3] else {},
+                    'skipped_docs': json.loads(result[4]) if result[4] else [],
+                    'current_step': result[5],
+                    'current_doc_index': result[6],
+                    'last_updated': result[7],
+                    'status': result[8]
+                }
+                print(f"✅ Draft found for {declaration_number}")
+                return draft
+            else:
+                print(f"ℹ️ No draft found for {declaration_number}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Error getting draft: {e}")
+            return None
+        finally:
+            session.close()
+
+    def delete_draft(self, declaration_number: str) -> bool:
+        """
+        Delete a draft after submission
+        """
+        session = self.Session()
+        try:
+            session.execute(
+                text("DELETE FROM drafts WHERE declaration_number = :decl_number"),
+                {"decl_number": declaration_number}
+            )
+            session.commit()
+            print(f"✅ Draft deleted for {declaration_number}")
+            return True
+        except Exception as e:
+            session.rollback()
+            print(f"❌ Error deleting draft: {e}")
+            return False
+        finally:
+            session.close()

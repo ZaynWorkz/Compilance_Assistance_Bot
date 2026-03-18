@@ -53,17 +53,12 @@ class ComplianceApp:
             {'type': 'mawb', 'label': '✈️ MAWB', 'mandatory': True},
             {'type': 'packing_list', 'label': '📦 Packing List', 'mandatory': False},
             {'type': 'delivery_order', 'label': '📋 Delivery Order', 'mandatory': False}
-        ]
-        
-        # Document order
-        self.document_order = [
-            ('declaration', '📄 Declaration'),
-            ('invoice', '💰 Invoice'),
-            ('packing_list', '📦 Packing List'),
-            ('bol_aws', '🚢 BOL/AWS'),
-            ('country_of_origin', '🌍 Country of Origin'),
-            ('delivery_order', '📋 Delivery Order')
-        ]
+        ] 
+        print("🔍 Document Order Type Check:")
+        for i, item in enumerate(self.document_order):
+            print(f"  Item {i}: type={type(item)}, value={item}")
+        print("✅ AFTER FIX - document_order[0]:", self.document_order[0])
+        print("✅ Type:", type(self.document_order[0]))
         
         # Initialize session state
         self._init_session_state()
@@ -114,110 +109,115 @@ class ComplianceApp:
         with col2:
             self._render_status_panel()
     
-    def _process_upload(self, file, doc_type, doc_label,is_mandatory):
-                """Process uploaded file with attempt tracking"""
+    def _process_upload(self, file, doc_info):
+        if isinstance(doc_info, tuple):
+            doc_type = doc_info[0]
+            doc_label = doc_info[1]
+            is_mandatory = True  # Assume mandatory for old format
+        else:
+            doc_type = doc_info.get('type')
+            doc_label = doc_info.get('label')
+            is_mandatory = doc_info.get('mandatory', True)
         
-                # Process document
-                result = self.doc_processor.process_document(file)
-                
-                # Check if document type matches expected
-                if result['document_type'] != doc_type:
-                    # Failed attempt
-                    can_proceed, message = self.attempt_tracker.register_attempt(
-                        doc_type, success=False
-                    )
-                    
-                    if not can_proceed:
-                        st.session_state.session_aborted = True
-                        st.error("❌ Too many failed attempts. Session aborted.")
-                        st.rerun()
-                        return
-                    
-                    attempts_data = self.attempt_tracker.get_attempts(doc_type)
-                    st.error(f"❌ Wrong document type. Expected {doc_label}. {attempts_data['remaining']} attempts left.")
-                    return
-                
-                # Validate extracted data
-                is_valid, validation_msg = self._validate_document_data(
-                    result['extracted_data'], doc_type
-                )
-                
-                if not is_valid:
-                    can_proceed, message = self.attempt_tracker.register_attempt(
-                        doc_type, success=False
-                    )
-                    
-                    if not can_proceed:
-                        st.session_state.session_aborted = True
-                        st.error("❌ Too many failed attempts. Session aborted.")
-                        st.rerun()
-                        return
-                    
-                    attempts_data = self.attempt_tracker.get_attempts(doc_type)
-                    st.error(f"❌ {validation_msg}. {attempts_data['remaining']} attempts left.")
-                    return
-                
-                # Success!
-                self.attempt_tracker.register_attempt(doc_type, success=True)
-                
-                # Save file locally
-                file_path = self.storage_manager.save_file(
-                    file,
-                    st.session_state.declaration_number,
-                    doc_type
-                )
-                
-                # Store in session
-                file_data = {
-                    'filename': file.name,
-                    'file_path': file_path,
-                    'document_type': doc_type,
-                    'extracted_data': result['extracted_data'],
-                    'validation': {'status': 'approved', 'message': validation_msg}
-                }
-                
-                # Make sure uploaded_docs exists
-                if 'uploaded_docs' not in st.session_state:
-                    st.session_state.uploaded_docs = {}
-                
-                st.session_state.uploaded_docs[doc_type] = file_data
-                
-                # Update database
-                self.db_client.update_document(
-                    st.session_state.declaration_number,
-                    doc_type,
-                    file_data
-                )
-                
-                # Show success
-                st.success(f"✅ {doc_label} approved!")
-                
-                # Auto-advance to next document
-                st.session_state.current_doc_index = st.session_state.get('current_doc_index', 0) + 1
-                time.sleep(1)  # Brief pause to show success
+        print(f"\n🔍 PROCESSING UPLOAD:")
+        print(f"  Expected: {doc_type}")
+        
+        # Process document
+        result = self.doc_processor.process_document(file)
+        
+        print(f"  Classified as: {result['document_type']}")
+        
+        # Check if document type matches expected
+        if result['document_type'] != doc_type:
+            # Failed attempt
+            can_proceed, message = self.attempt_tracker.register_attempt(
+                doc_type, success=False
+            )
+            
+            if not can_proceed:
+                st.session_state.session_aborted = True
+                st.error("❌ Too many failed attempts. Session aborted.")
                 st.rerun()
+                return
+            
+            attempts_data = self.attempt_tracker.get_attempts(doc_type)
+            st.error(f"❌ Wrong document type. Expected {doc_label}. {attempts_data['remaining']} attempts left.")
+            return
+        
+        # Success!
+        self.attempt_tracker.register_attempt(doc_type, success=True)
+        
+        # Save file
+        file_path = self.storage_manager.save_file(
+            file,
+            st.session_state.declaration_number,
+            doc_type
+        )
+        
+        # Store in session
+        file_data = {
+            'filename': file.name,
+            'file_path': file_path,
+            'document_type': doc_type,
+            'extracted_data': result.get('extracted_data', {}),
+            'validation': {'status': 'approved'}
+        }
+        
+        if 'uploaded_docs' not in st.session_state:
+            st.session_state.uploaded_docs = {}
+        
+        st.session_state.uploaded_docs[doc_type] = file_data
+        
+        # Auto-save draft
+        self._auto_save_draft()
+        
+        st.success(f"✅ {doc_label} approved!")
+        
+        # Move to next document
+        st.session_state.current_doc_index = st.session_state.get('current_doc_index', 0) + 1
+        st.rerun()
 
     def _render_sidebar(self):
         """Render sidebar with session info"""
         st.markdown("### 📋 Session Info")
         
-        if st.session_state.declaration_number:
-            st.info(f"**DEC:** {st.session_state.declaration_number}")
+        context = self.session_manager.get_context()
+        
+        # Session status
+        st.markdown(f"**Session ID:** `{st.session_state.session_id[:8]}...`")
+        if hasattr(context.current_state, 'name'):
+            # It's an enum
+            state_name = context.current_state.name
+        else:
+            # It's already a string
+            state_name = str(context.current_state)
+        st.markdown(f"**Current State:** `{state_name}`")
+        st.markdown(f"**Last Activity:** {context.last_activity.strftime('%H:%M:%S')}")
+        
+        st.divider()
         
         # Progress
-        uploaded = len(st.session_state.uploaded_docs)
+        uploaded = len(st.session_state.get('uploaded_docs', {}))
         total = len(self.document_order)
         st.progress(uploaded / total, text=f"Progress: {uploaded}/{total}")
         
         # Show uploaded docs
-        if st.session_state.uploaded_docs:
+        if uploaded > 0:
             st.markdown("### ✅ Uploaded")
-            for doc_type, _ in self.document_order[:uploaded]:
-                st.markdown(f"- {dict(self.document_order)[doc_type]}")
+            for i in range(uploaded):
+                doc_info = self.document_order[i]
+                if isinstance(doc_info, dict):
+                    doc_label = doc_info.get('label', 'Unknown')
+                else:
+                    doc_label = doc_info[1]  # fallback for tuples
+                st.markdown(f"- {doc_label}")
+        
+        st.divider()
         
         # Restart button
-        if st.button("🔄 Restart Session"):
-            self._restart_session()
+        if st.button("🔄 Restart Session", use_container_width=True):
+            st.session_state.restart_requested = True
+            st.rerun()
     # app/main.py - Add this method to your ComplianceApp class
 
     def validate_declaration_format(self, decl_number: str) -> bool:
@@ -289,27 +289,29 @@ class ComplianceApp:
             
             st.rerun()
     
+    # app/main.py - Updated _render_upload_step
+
+    # app/main.py - Updated _render_upload_step
+
     def _render_upload_step(self):
         """Step 3: Upload documents one by one"""
         
-        # Get current index safely
         current_idx = st.session_state.get('current_doc_index', 0)
         
         if current_idx >= len(self.document_order):
-            # All documents processed - show validation results
             self._validate_and_show_results()
             return
         
-        # Get current document info - handle both tuple and dict formats
+        # Get current document info
         doc_info = self.document_order[current_idx]
         
-        # Extract values safely based on type
+        # 🔥 FIX: Handle both tuple and dictionary formats
         if isinstance(doc_info, tuple):
             # Old format: (type, label)
             doc_type = doc_info[0]
             doc_label = doc_info[1]
-            # For tuples, assume mandatory if it's one of the first 4
-            is_mandatory = current_idx < 4  # First 4 are mandatory
+            # Assume first 4 are mandatory, rest optional
+            is_mandatory = current_idx < 4
         else:
             # New format: dictionary
             doc_type = doc_info.get('type', 'unknown')
@@ -317,50 +319,63 @@ class ComplianceApp:
             is_mandatory = doc_info.get('mandatory', True)
         
         # Create header
-        mandatory_tag = " (Required)" if is_mandatory else " (Optional)"
-        st.markdown(f"## 📤 Upload {doc_label}{mandatory_tag}")
+        tag = " (Required)" if is_mandatory else " (Optional)"
+        st.markdown(f"## 📤 Upload {doc_label}{tag}")
         
-        # Show progress
+        # Progress for mandatory docs only
         uploaded_docs = st.session_state.get('uploaded_docs', {})
-        mandatory_count = sum(1 for d in self.document_order[:current_idx] 
-                            if (isinstance(d, tuple) and d[0] in uploaded_docs) or
-                            (isinstance(d, dict) and d.get('type') in uploaded_docs))
+        
+        # Count mandatory uploaded
+        mandatory_uploaded = 0
+        for idx, d in enumerate(self.document_order[:current_idx]):
+            if isinstance(d, tuple):
+                # Old format
+                doc_type_check = d[0]
+                is_mandatory_check = idx < 4
+            else:
+                # New format
+                doc_type_check = d.get('type')
+                is_mandatory_check = d.get('mandatory', False)
+            
+            if is_mandatory_check and doc_type_check in uploaded_docs:
+                mandatory_uploaded += 1
         
         total_mandatory = 4  # We know we have 4 mandatory docs
         
         if total_mandatory > 0:
-            st.progress(mandatory_count / total_mandatory, 
-                    text=f"Mandatory documents: {mandatory_count}/{total_mandatory}")
+            st.progress(mandatory_uploaded / total_mandatory, 
+                    text=f"Mandatory documents: {mandatory_uploaded}/{total_mandatory}")
         
-        # Handle optional documents
+        # Show optional notice and SKIP button
         if not is_mandatory:
-            st.info("⚠️ This document is optional. You can skip it if not available.")
+            st.info("⚠️ This document is optional. You can upload now or skip and continue.")
             
             col1, col2 = st.columns([1, 5])
             with col1:
-                if st.button("⏭️ Skip", key=f"skip_{doc_type}"):
+                if st.button("⏭️ Skip for now", key=f"skip_{doc_type}"):
+                    # Mark as skipped in session
+                    if 'skipped_docs' not in st.session_state:
+                        st.session_state.skipped_docs = []
+                    st.session_state.skipped_docs.append(doc_type)
+                    
+                    # Move to next document
                     st.session_state.current_doc_index = current_idx + 1
                     st.rerun()
-                    return
-        
-        # Get attempt data
-        attempts_data = self.attempt_tracker.get_attempts(doc_type)
-        
-        # Show attempts if any failures
-        if attempts_data['failed'] > 0:
-            st.warning(f"⚠️ Failed attempts: {attempts_data['failed']}/{self.attempt_tracker.max_attempts}")
-            st.info(f"⏳ Attempts remaining: {attempts_data['remaining']}")
-        
+        # Add temporarily in _render_upload_step
+        st.write("Debug - document_order type:", type(self.document_order[0]))
+        st.write("Debug - first item:", self.document_order[0])
+
         # File uploader
         uploaded_file = st.file_uploader(
             f"Choose {doc_label} file",
             type=['pdf', 'jpg', 'jpeg', 'png'],
-            key=f"uploader_{doc_type}_{attempts_data['failed']}"
+            key=f"uploader_{doc_type}_{current_idx}"
         )
         
         if uploaded_file:
-            self._process_upload(uploaded_file, doc_type, doc_label, is_mandatory)
-        
+            # Pass the whole doc_info to _process_upload
+            self._process_upload(uploaded_file, doc_info)
+
     def _render_summary_step(self):
         """Step 4: Show summary grid"""
         st.markdown("## 📋 Document Summary")
@@ -506,6 +521,142 @@ class ComplianceApp:
                 else:
                     st.markdown(f"📎 **{doc_label}**")
 
+    def _auto_save_draft(self):
+        """Save current progress to database"""
+        
+        if not st.session_state.get('declaration_number'):
+            return
+        
+        draft_data = {
+            'declaration_number': st.session_state.declaration_number,
+            'declaration_date': st.session_state.get('declaration_date'),
+            'uploaded_docs': st.session_state.get('uploaded_docs', {}),
+            'skipped_docs': st.session_state.get('skipped_docs', []),
+            'current_step': st.session_state.get('current_step'),
+            'current_doc_index': st.session_state.get('current_doc_index', 0),
+            'last_updated': str(datetime.now()),
+            'status': 'draft'
+        }
+        
+        # Save to database
+        self.db_client.save_draft(draft_data)
+        print(f"💾 Auto-saved draft for {st.session_state.declaration_number}")
+
+
+    def _check_for_existing_draft(self, declaration_number):
+        """Check if there's a draft for this declaration"""
+        
+        draft = self.db_client.get_draft(declaration_number)
+        
+        if draft:
+            st.info(f"📂 Found existing draft for {declaration_number}")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🔄 Resume Draft"):
+                    self._restore_draft(draft)
+            with col2:
+                if st.button("🆕 Start Fresh"):
+                    self._clear_draft(declaration_number)
+            return True
+        return False
+
+    def _restore_draft(self, draft):
+        """Restore a saved draft"""
+        
+        st.session_state.declaration_number = draft['declaration_number']
+        st.session_state.declaration_date = draft.get('declaration_date')
+        st.session_state.uploaded_docs = draft.get('uploaded_docs', {})
+        st.session_state.skipped_docs = draft.get('skipped_docs', [])
+        st.session_state.current_step = draft.get('current_step', 'document_upload')
+        st.session_state.current_doc_index = draft.get('current_doc_index', 0)
+        
+        # Show welcome back message
+        pending = self._get_pending_documents()
+        if pending:
+            st.info(f"📋 You have {len(pending)} documents pending: {', '.join(pending)}")
+        
+        st.rerun()
+
+    # app/main.py - Add pending docs display
+
+
+    def _get_pending_documents(self):
+        """Get list of still-needed documents"""
+        
+        uploaded = set(st.session_state.get('uploaded_docs', {}).keys())
+        skipped = set(st.session_state.get('skipped_docs', []))
+        
+        pending = []
+        for doc in self.document_order:
+            # 🔥 FIX: Handle both tuple and dictionary formats
+            if isinstance(doc, tuple):
+                # Old format: (type, label)
+                doc_type = doc[0]
+                doc_label = doc[1]
+                # Assume first 4 are mandatory
+                is_mandatory = self.document_order.index(doc) < 4
+            else:
+                # New format: dictionary
+                doc_type = doc.get('type', 'unknown')
+                doc_label = doc.get('label', 'Unknown')
+                is_mandatory = doc.get('mandatory', True)
+            
+            if is_mandatory and doc_type not in uploaded:
+                pending.append(doc_label)
+            elif not is_mandatory and doc_type not in uploaded and doc_type not in skipped:
+                pending.append(f"{doc_label} (optional)")
+        
+        return pending
+
+
+    def _render_status_panel(self):
+        """Render right panel with status"""
+        st.markdown("### 📊 Status")
+        
+        # Declaration info
+        if st.session_state.get('declaration_number'):
+            st.info(f"**DEC:** {st.session_state.declaration_number}")
+        
+        if st.session_state.get('declaration_date'):
+            st.info(f"**Date:** {st.session_state.declaration_date}")
+        
+        st.divider()
+        
+        # Show pending documents
+        pending = self._get_pending_documents()
+        if pending:
+            st.warning(f"⏳ **Pending:** {len(pending)} documents")
+            with st.expander("📋 Pending Documents"):
+                for doc in pending:
+                    st.markdown(f"• {doc}")
+        else:
+            st.success("✅ All documents uploaded!")
+        
+        st.divider()
+        
+        # Document queue
+        st.markdown("#### 📋 Document Queue")
+        
+        current_idx = st.session_state.get('current_doc_index', 0)
+        uploaded_docs = st.session_state.get('uploaded_docs', {})
+        
+        for idx, doc_info in enumerate(self.document_order):
+            # 🔥 FIX: Handle both tuple and dictionary formats
+            if isinstance(doc_info, tuple):
+                doc_type = doc_info[0]
+                doc_label = doc_info[1]
+            else:
+                doc_type = doc_info.get('type', 'unknown')
+                doc_label = doc_info.get('label', 'Unknown')
+            
+            if doc_type in uploaded_docs:
+                st.markdown(f"✅ **{doc_label}**")
+            elif idx == current_idx:
+                st.markdown(f"⏳ **{doc_label}**")
+            else:
+                st.markdown(f"⏱️ **{doc_label}**")
+
     def _validate_and_show_results(self):
         """Run smart validation and show results"""
         
@@ -548,12 +699,12 @@ class ComplianceApp:
                     st.session_state.current_doc_index = 0
                     st.rerun()
         
-        def _validate_declaration_format(self, decl_number):
-            """Validate declaration number format"""
-            import re
-            pattern = r'^\d{3}-\d{8}-\d{2}$'
-            return bool(re.match(pattern, decl_number))
-        
+    def _validate_declaration_format(self, decl_number):
+        """Validate declaration number format"""
+        import re
+        pattern = r'^\d{3}-\d{8}-\d{2}$'
+        return bool(re.match(pattern, decl_number))
+    
     def _validate_document_data(self, data, doc_type):
         """Validate document-specific data"""
         required_fields = {
@@ -633,6 +784,7 @@ class ComplianceApp:
 
 
 def main():
+
     app = ComplianceApp()
     app.run()
 
